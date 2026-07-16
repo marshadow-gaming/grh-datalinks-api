@@ -52,10 +52,16 @@ class DemandeAbsenceController extends Controller
 
         $demande->load('employe.user');
 
-        // Notifie le DRH
-        \App\Models\User::where('role', 'drh')->each(function($user) use ($demande) {
-            $user->notify(new NouvelleDemandeNotification($demande));
-        });
+        // Notifie tous les utilisateurs habilités à traiter les absences :
+        // DRH (rôle), Directeur (rôle), + tout utilisateur avec la permission "absences" accordée individuellement
+        \App\Models\User::where('role', 'drh')
+            ->orWhere('role', 'directeur')
+            ->orWhereHas('permissions', fn($q) => $q->where('module', 'absences'))
+            ->get()
+            ->unique('id')
+            ->each(function($user) use ($demande) {
+                $user->notify(new NouvelleDemandeNotification($demande));
+            });
 
         return response()->json(['message' => 'Demande envoyée', 'demande' => $demande], 201);
     }

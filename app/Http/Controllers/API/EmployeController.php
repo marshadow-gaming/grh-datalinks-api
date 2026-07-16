@@ -30,8 +30,10 @@ class EmployeController extends Controller
         $request->validate([
             'prenom'           => 'required|string',
             'nom'              => 'required|string',
-            'email'            => 'required|email|unique:users',
-            'password'         => 'required|min:6',
+            // email/password désormais optionnels : requis pour l'Admin (via Utilisateurs.jsx),
+            // omis pour la DRH/Directeur qui créent un employé/stagiaire sans définir ses identifiants
+            'email'            => 'nullable|email|unique:users',
+            'password'         => 'nullable|min:6',
             'role'             => 'required|in:admin,drh,directeur,employe,stagiaire',
             'telephone'        => 'nullable|string',
             'date_naissance'   => 'nullable|date',
@@ -48,10 +50,23 @@ class EmployeController extends Controller
             'contrat'          => 'nullable|file|mimes:pdf|max:5120',
         ]);
 
+        // Un Directeur ou une DRH ne peut créer que des Employés ou des Stagiaires,
+        // jamais un autre Directeur/DRH/Admin
+        if (in_array($request->user()->role, ['drh', 'directeur']) && !in_array($request->role, ['employe', 'stagiaire'])) {
+            return response()->json(['message' => "Vous ne pouvez créer que des employés ou des stagiaires"], 403);
+        }
+
+        $identifiantsDefinis = $request->filled('email') && $request->filled('password');
+
+        // Si l'email/mot de passe ne sont pas fournis (création par DRH/Directeur),
+        // on génère des valeurs temporaires ; l'Admin les redéfinira ensuite depuis Utilisateurs.jsx
+        $email = $request->filled('email') ? $request->email : 'temp.' . uniqid() . '@datalinks.local';
+        $password = $request->filled('password') ? $request->password : bin2hex(random_bytes(8));
+
         $user = User::create([
             'name'     => $request->prenom . ' ' . $request->nom,
-            'email'    => $request->email,
-            'password' => Hash::make($request->password),
+            'email'    => $email,
+            'password' => Hash::make($password),
             'role'     => $request->role,
             'telephone'=> $request->telephone,
         ]);
@@ -95,8 +110,16 @@ class EmployeController extends Controller
             ]);
         }
 
+        // Rappel à tous les admins : ne pas oublier d'accorder l'accès scanner si nécessaire
+        \App\Models\User::where('role', 'admin')->each(function ($admin) use ($user) {
+            $admin->notify(new \App\Notifications\RappelAccorderScannerNotification($user->name));
+        });
+
         return response()->json([
-            'message' => 'Employé créé avec succès',
+            'message' => $identifiantsDefinis
+                ? 'Employé créé avec succès'
+                : "Employé créé avec succès. Un administrateur doit encore définir son email et son mot de passe de connexion.",
+            'identifiants_a_definir' => !$identifiantsDefinis,
             'employe' => $employe->load('user', 'departement', 'documents')
         ], 201);
     }

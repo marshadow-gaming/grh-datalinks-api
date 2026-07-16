@@ -21,7 +21,12 @@ class AuthController extends Controller
             ], 401);
         }
 
-        $user  = Auth::user();
+        $user = Auth::user();
+
+        // Session unique par compte : toute session précédemment ouverte sur un
+        // autre appareil/navigateur est invalidée dès qu'une nouvelle connexion réussit
+        $user->tokens()->delete();
+
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([

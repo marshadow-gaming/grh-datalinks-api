@@ -13,6 +13,8 @@ use App\Http\Controllers\API\TravailStagiaireController;
 use App\Http\Controllers\API\EntretienController;
 use App\Http\Controllers\API\UserManagementController;
 use App\Http\Controllers\API\PermissionController;
+use App\Http\Controllers\API\QrGlobalController;
+use App\Http\Controllers\API\PinController;
 
 // ============ Routes publiques ============
 Route::post('/login', [AuthController::class, 'login']);
@@ -46,37 +48,44 @@ Route::middleware('role:admin')->group(function () {
     Route::apiResource('departements', DepartementController::class)->except(['index', 'show']);
     Route::get('utilisateurs', [UserManagementController::class, 'index']);
     Route::post('utilisateurs', [UserManagementController::class, 'store']);
-    Route::put('utilisateurs/{id}', [UserManagementController::class, 'update']);
     Route::delete('utilisateurs/{id}', [UserManagementController::class, 'destroy']);
     Route::get('permissions/{userId}', [PermissionController::class, 'index']);
     Route::post('permissions', [PermissionController::class, 'store']);
     Route::delete('permissions', [PermissionController::class, 'destroy']);
+    Route::get('qr-global', [QrGlobalController::class, 'show']);
+    Route::post('qr-global/regenerer', [QrGlobalController::class, 'regenerer']);
 });
-// Employés, absences, recrutement : Admin + DRH + Directeur
-Route::middleware('permission:absences,admin,drh,directeur')->group(function () {
+// Employés, absences, recrutement : Admin + DRH + Directeur // DRH/Directeur doivent désormais avoir la permission explicite
+Route::middleware('permission:absences,admin')->group(function () {
     Route::post('demandes/{id}/traiter', [DemandeAbsenceController::class, 'traiter']);
 });
 
 // Scanner + Rapport présence : Admin + DRH UNIQUEMENT (pas Directeur)
 // Scanner — accessible par rôle standard OU permission individuelle
-Route::middleware('permission:scanner,admin,drh')->group(function () {
+Route::middleware('permission:scanner,admin')->group(function () {
     Route::post('presences/scanner', [PresenceController::class, 'scanner']);
     Route::get('presences/presents-aujourdhui', [PresenceController::class, 'presentsAujourdhui']);
+    Route::post('presences/scanner-global', [PresenceController::class, 'scanner']);
 });
 
 // Historique présence — accessible par rôle standard OU permission individuelle
-Route::middleware('permission:historique_presence,admin,drh')->group(function () {
+Route::middleware('permission:historique_presence,admin')->group(function () {
     Route::get('presences/historique', [PresenceController::class, 'historique']);
 });
 
 // ============ Admin + DRH + Directeur (lecture départements) ============
-Route::middleware('permission:recrutement,admin,drh,directeur')->group(function () {
+Route::middleware('permission:recrutement,admin')->group(function () {
     Route::get('departements', [DepartementController::class, 'index']);
     Route::get('departements/{id}', [DepartementController::class, 'show']);
     Route::apiResource('offres-emploi', OffreEmploiController::class)->except(['index']);
     Route::apiResource('candidatures', CandidatureController::class)->except(['store']);
     Route::post('entretiens', [EntretienController::class, 'store']);
     Route::put('entretiens/{id}', [EntretienController::class, 'update']);
+});
+
+Route::middleware('role:admin,drh,directeur')->group(function () {
+    Route::post('employes', [EmployeController::class, 'store']);
+    Route::put('utilisateurs/{id}', [UserManagementController::class, 'update']);
 });
 
 // ============ Toutes les routes communes ============
@@ -87,6 +96,9 @@ Route::middleware('role:admin,drh,directeur,employe,stagiaire')->group(function 
     Route::get('offres-emploi', [OffreEmploiController::class, 'index']);
     Route::get('offres-emploi/{id}', [OffreEmploiController::class, 'show']);
     Route::get('presences/mon-qrcode', [PresenceController::class, 'monQrCode']);
+    Route::get('pin/statut', [PinController::class, 'statut']);
+    Route::post('pin/definir', [PinController::class, 'definir']);
+    Route::post('pin/verifier', [PinController::class, 'verifier']);
     Route::get('travaux-stagiaire', [TravailStagiaireController::class, 'index']);
     Route::post('travaux-stagiaire', [TravailStagiaireController::class, 'store'] );
     Route::get('mes-permissions', [PermissionController::class, 'mesPermissions']);

@@ -4,22 +4,72 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Presence;
 use App\Models\Employe;
+use App\Models\QrGlobal;
+use App\Models\DemandeAbsence;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
 
 class PresenceController extends Controller
 {
     // Scan du QR — pointe arrivée ou départ selon l'état du jour
+    // Gère à la fois le QR individuel (opérateur DRH) et le QR global (auto-scan par l'employé)
+    // Coordonnées GPS de Data Links SARL (Cotonou) — À REMPLACER par les vraies coordonnées du bâtiment
+    const LATITUDE_ENTREPRISE = 6.3822991; 
+    const LONGITUDE_ENTREPRISE = 2.4037964; 
+    const RAYON_AUTORISE_METRES = 30;
+
+    // Distance en mètres entre deux points GPS (formule de Haversine)
+    private function distanceMetres($lat1, $lng1, $lat2, $lng2)
+    {
+        $rayonTerre = 6371000; // mètres
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLng = deg2rad($lng2 - $lng1);
+        $a = sin($dLat / 2) ** 2 + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLng / 2) ** 2;
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+        return $rayonTerre * $c;
+    }
+
     public function scanner(Request $request)
     {
         $request->validate([
-            'qr_token' => 'required|string',
+            'qr_token'  => 'required|string',
+            'latitude'  => 'nullable|numeric',
+            'longitude' => 'nullable|numeric',
         ]);
 
-        $employe = Employe::with('user')->where('qr_token', $request->qr_token)->first();
+        $qrGlobalActuel = QrGlobal::actuel();
+        $estScanGlobal = $qrGlobalActuel && $request->qr_token === $qrGlobalActuel->code;
 
-        if (!$employe) {
-            return response()->json(['message' => 'QR Code invalide'], 404);
+        if ($estScanGlobal) {
+            // QR global : la personne scanne elle-même, identifiée par son propre compte
+            $employe = $request->user()->employe()->with('user')->first();
+            if (!$employe) {
+                return response()->json(['message' => 'Aucun profil employé associé à ce compte'], 404);
+            }
+
+            // Vérification de la géolocalisation : uniquement pour le QR global (auto-scan)
+            if (!$request->filled('latitude') || !$request->filled('longitude')) {
+                return response()->json([
+                    'message' => "La localisation est requise pour utiliser le QR Code général. Merci d'autoriser l'accès à votre position.",
+                ], 422);
+            }
+
+            $distance = $this->distanceMetres(
+                $request->latitude, $request->longitude,
+                self::LATITUDE_ENTREPRISE, self::LONGITUDE_ENTREPRISE
+            );
+
+            if ($distance > self::RAYON_AUTORISE_METRES) {
+                return response()->json([
+                    'message' => "Vous devez être présent dans les locaux de Data Links pour pointer via le QR Code général.",
+                ], 422);
+            }
+        } else {
+            // QR individuel : identifie la cible par le token scanné
+            $employe = Employe::with('user')->where('qr_token', $request->qr_token)->first();
+            if (!$employe) {
+                return response()->json(['message' => 'QR Code invalide'], 404);
+            }
         }
 
         $today = Carbon::today()->toDateString();
@@ -31,6 +81,17 @@ class PresenceController extends Controller
 
         if (!$presence) {
             // Premier scan du jour → Arrivée
+
+            if ($estScanGlobal) {
+                $limite = $employe->user->role === 'stagiaire' ? '08:00:00' : '08:30:00';
+                if ($now > $limite) {
+                    $employe->user->notify(new \App\Notifications\QrGlobalHorsDelaiNotification(substr($limite, 0, 5)));
+                    return response()->json([
+                        'message' => "Heure limite dépassée (" . substr($limite, 0, 5) . "). Merci de vous enregistrer auprès de la DRH avec votre QR Code personnel.",
+                    ], 422);
+                }
+            }
+
             $presence = Presence::create([
                 'employe_id'    => $employe->id,
                 'date'          => $today,
@@ -51,6 +112,30 @@ class PresenceController extends Controller
 
         if (!$presence->heure_depart) {
             // Deuxième scan du jour → Départ
+
+            if ($estScanGlobal) {
+                $debutBlocage = '09:00:00';
+                $finBlocage = '18:30:00';
+
+                if ($now >= $debutBlocage && $now < $finBlocage) {
+                    $permissionValide = DemandeAbsence::where('employe_id', $employe->id)
+                        ->where('type', 'permission')
+                        ->where('statut', 'approuvee')
+                        ->where('date_debut', $today)
+                        ->whereNotNull('heure_debut')
+                        ->whereNotNull('heure_fin')
+                        ->where('heure_debut', '<=', $now)
+                        ->where('heure_fin', '>=', $now)
+                        ->exists();
+
+                    if (!$permissionValide) {
+                        return response()->json([
+                            'message' => "Le pointage de départ via le QR Code général n'est pas disponible entre 9h00 et 18h30. Revenez à 18h30, ou présentez-vous avec une permission validée en cours.",
+                        ], 422);
+                    }
+                }
+            }
+
             $presence->update([
                 'heure_depart' => $now,
                 'scanne_par'   => auth()->id(),

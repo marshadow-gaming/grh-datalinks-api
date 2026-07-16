@@ -11,11 +11,11 @@ class User extends Authenticatable
     use HasApiTokens, Notifiable;
 
     protected $fillable = [
-        'name', 'email', 'password',
-        'role', 'telephone', 'photo', 'statut'
+        'name', 'email', 'password', 'pin',
+        'role', 'telephone', 'photo', 'statut',
     ];
 
-    protected $hidden = ['password', 'remember_token'];
+    protected $hidden = ['password', 'remember_token', 'pin'];
 
     public function employe() {
         return $this->hasOne(Employe::class);

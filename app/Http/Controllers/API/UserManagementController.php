@@ -5,11 +5,31 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\Employe;
 use App\Models\DocumentEmploye;
+use App\Models\Permission;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use App\Notifications\BienvenuNotification;
 
 class UserManagementController extends Controller
 {
+    // Modules accordés par défaut selon le rôle (référence : commande permissions:seed-defaults)
+    private $permissionsParDefaut = [
+        'drh'       => ['absences', 'scanner', 'historique_presence', 'recrutement'],
+        'directeur' => ['absences', 'recrutement'],
+    ];
+
+    // Attribue les permissions par défaut correspondant au rôle, sans dupliquer
+    private function seedPermissionsParDefaut(User $user)
+    {
+        $modules = $this->permissionsParDefaut[$user->role] ?? [];
+        foreach ($modules as $module) {
+            Permission::firstOrCreate(
+                ['user_id' => $user->id, 'module' => $module],
+                ['accorde_par' => auth()->id()]
+            );
+        }
+    }
+
     // Liste complète tous rôles (vue Admin)
     public function index()
     {
@@ -69,6 +89,14 @@ class UserManagementController extends Controller
 
         $user->notify(new BienvenuNotification());
 
+        // Attribution automatique des permissions par défaut si DRH ou Directeur
+        $this->seedPermissionsParDefaut($user);
+
+        // Rappel à tous les admins : ne pas oublier d'accorder l'accès scanner si nécessaire
+        User::where('role', 'admin')->each(function ($admin) use ($user) {
+            $admin->notify(new \App\Notifications\RappelAccorderScannerNotification($user->name));
+        });
+
         if ($request->hasFile('cv')) {
             $path = $request->file('cv')->store('documents/cv', 'public');
             DocumentEmploye::create([
@@ -97,6 +125,14 @@ class UserManagementController extends Controller
     public function update(Request $request, $id)
     {
         $employe = Employe::findOrFail($id);
+        $ancienRole = $employe->user->role;
+        $demandeur = $request->user();
+
+        // Une DRH ou un Directeur ne peut modifier que des Employés ou des Stagiaires,
+        // jamais un compte Admin, Directeur ou DRH (y compris le sien)
+        if (in_array($demandeur->role, ['drh', 'directeur']) && !in_array($ancienRole, ['employe', 'stagiaire'])) {
+            return response()->json(['message' => "Vous ne pouvez modifier que des employés ou des stagiaires"], 403);
+        }
 
         $employe->update($request->only(
             'departement_id', 'poste', 'type_contrat', 'date_embauche',
@@ -105,8 +141,27 @@ class UserManagementController extends Controller
         ));
 
         $userFields = $request->only('name', 'email', 'telephone', 'role', 'statut');
+
+        // Le mot de passe doit être traité à part : ne l'inclure que s'il est fourni,
+        // et toujours le hasher (jamais stocké en clair)
+        if ($request->filled('password')) {
+            $userFields['password'] = \Illuminate\Support\Facades\Hash::make($request->password);
+        }
+
+        // Une DRH ou un Directeur ne peut jamais changer le rôle vers autre chose qu'employe/stagiaire
+        if (in_array($demandeur->role, ['drh', 'directeur']) && isset($userFields['role'])
+            && !in_array($userFields['role'], ['employe', 'stagiaire'])) {
+            return response()->json(['message' => "Vous ne pouvez pas attribuer ce rôle"], 403);
+        }
+
         if (!empty($userFields)) {
             $employe->user->update($userFields);
+        }
+
+        // Si le rôle a changé vers drh/directeur (promotion), on attribue les permissions par défaut
+        $nouveauRole = $employe->user->fresh()->role;
+        if ($nouveauRole !== $ancienRole && in_array($nouveauRole, ['drh', 'directeur'])) {
+            $this->seedPermissionsParDefaut($employe->user->fresh());
         }
 
         return response()->json([
